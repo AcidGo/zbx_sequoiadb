@@ -5,7 +5,7 @@ Usage:
     1. 监控巨杉数据库节点、集群的异常。
 
 """
-import logging, json, sys, time
+import logging, json, os, sys, time
 import pysequoiadb
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -46,15 +46,20 @@ class SDBInst(object):
     """
     SupportSnapType = {
         # 数据库快照：列出数据库的状态和监控信息。
+        "SDB_SNAP_COLLECTIONSPACES": 5,
         "SDB_SNAP_DATABASE": 6,
         "SDB_SNAP_SYSTEM": 7,
     }
     SupportFuncs = {
         "snapshot",
         "sessions",
+        "cs_report_local",
+        "cs_report_remote",
+        "cs_report",
         # "discovery_collectionspaces",
         "collectionspaces",
-        # "listCollectionSpaces"
+        # "listCollectionSpaces",
+        "discovery_collectionspaces_host",
     }
     SnapType = {
         "SDB_SNAP_COLLECTIONSPACES": 5,
@@ -72,9 +77,13 @@ class SDBInst(object):
 
         self.db = None
         self.info = "UNKNOW"
+        self.conf = {}
 
     def __del__(self):
         self.close()
+
+    def add_conf(self, dct):
+        self.conf = dct
 
     def connect(self):
         self.db = client(
@@ -99,6 +108,9 @@ class SDBInst(object):
             raise ValueError(msg)
         f = getattr(self, func)
         return f(*args)
+
+    def _cs_report_local_file(self):
+        return os.path.join(sys.path[0], os.path.basename(os.path.splitext(__file__)[0]) + ".cs_report_local.{!s}_{!s}".format(self.host, str(self.service)) + ".json")
 
     def _walk_snap_cursor_dict(self, cr):
         res_dict = {}
@@ -132,6 +144,7 @@ class SDBInst(object):
         snap_type_int = self.SupportSnapType[snap_type_str]
         cr = self.db.get_snapshot(snap_type_int)
         res_dict = self._walk_snap_cursor_dict(cr)
+        cr.close()
         return res_dict
 
     def sessions(self):
@@ -183,6 +196,7 @@ class SDBInst(object):
         snap_type_int = self.SnapType[snap_type_str]
         cr = self.db.get_snapshot(snap_type_int)
         res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
         res_data = {
             "split_type": {
                 "Agent": {
@@ -261,6 +275,56 @@ class SDBInst(object):
         res_data["slowest_second"] = now_time - oldest_query_time
         return res_data
 
+    def cs_report_local(self):
+        res = {}
+        snap_type_str = "SDB_SNAP_COLLECTIONSPACES"
+        snap_type_int = self.SnapType[snap_type_str]
+        cr = self.db.get_snapshot(
+            snap_type_int, 
+            condition = self.conf.get("cs_cond", {"Name": "PanicAndFillMe"}),
+            selector = {
+                "Name": "",
+                "TotalSize": "",
+                "FreeSize": "",
+                "TotalDataSize": "",
+                "FreeDataSize": "",
+            }
+        )
+        res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
+        for s in res_list:
+            res[s["Name"]] = {k: v for k, v in s.items() if k != "Name"}
+        jsonfile = self._cs_report_local_file()
+        with open(jsonfile, "w") as f:
+            json.dump(res, f)
+        return "1"
+        
+    def cs_report_remote(self, cs_name):
+        res = {}
+        jsonfile = self._cs_report_local_file()
+        with open(jsonfile, "r") as f:
+            res = json.load(f)
+        return res[cs_name]
+        
+    def cs_report(self, cs_name):
+        res = {}
+        snap_type_str = "SDB_SNAP_COLLECTIONSPACES"
+        snap_type_int = self.SnapType[snap_type_str]
+        cr = self.db.get_snapshot(
+            snap_type_int, 
+            condition = self.conf.get("cs_cond", {"Name": cs_name}),
+            selector = {
+                "Name": "",
+                "TotalSize": "",
+                "FreeSize": "",
+                "TotalDataSize": "",
+                "FreeDataSize": "",
+            }
+        )
+        res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
+        return res_list[0]
+
     def discovery_collectionspaces(self):
         """
         Returns:
@@ -281,6 +345,7 @@ class SDBInst(object):
         snap_type_int = self.SnapType[snap_type_str]
         cr = self.db.get_snapshot(snap_type_int)
         res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
         for s in res_list:
             name = s["Name"]
             uniqueid = s["UniqueID"]
@@ -290,6 +355,28 @@ class SDBInst(object):
                 "{#SERVICE}": self.service,
                 "{#CSNAME}": name,
                 # "{#UNIQUEID}": uniqueid,
+            })
+        return res
+
+    def discovery_collectionspaces_host(self):
+        """
+        """
+        res = {"data": []}
+        snap_type_str = "SDB_SNAP_COLLECTIONSPACES"
+        snap_type_int = self.SnapType[snap_type_str]
+        cr = self.db.get_snapshot(
+            snap_type_int, 
+            condition = self.conf.get("cs_cond", {"Name": "PanicAndFillMe"}),
+            selector = {
+                "Name": "",
+            }
+        )
+        res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
+        for s in res_list:
+            name = s["Name"]
+            res["data"].append({
+                "{#CSNAME}": name
             })
         return res
 
@@ -334,6 +421,7 @@ class SDBInst(object):
         condition = {"Name": cs_name}
         cr = self.db.get_snapshot(snap_type_int, condition=condition)
         res_dict = self._walk_snap_cursor_dict(cr)
+        cr.close()
         res["csname"] = cs_name
         res["PageSize"] = res_dict.get("PageSize", -1)
         res["LobPageSize"] = res_dict.get("LobPageSize", -1)
@@ -354,6 +442,7 @@ class SDBInst(object):
         res = []
         cr = self.db.list_collection_spaces()
         res_list = self._walk_snap_cursor_list(cr)
+        cr.close()
         for i in res_list:
             if "Name" in i:
                 res.append(i["Name"])
@@ -392,6 +481,7 @@ def discovery_all_cs():
         zbx_sdb.close()
     return res
 
+
 def main():
     import sys
     if len(sys.argv) <= 1:
@@ -415,6 +505,7 @@ def main():
         func = sys.argv[2]
         args = sys.argv[3:]
         zbx_sdb = SDBInst(**db_config_connect)
+        zbx_sdb.add_conf(zbx_sdb_config.db_config[db])
         zbx_sdb.connect()
         zbx_sdb.set_info(zbx_sdb_config.db_config[db].get("info", "UNKNOW"))
         res = zbx_sdb.call(func, *args)
@@ -433,4 +524,5 @@ if __name__ == "__main__":
     except Exception as e:
         logging.exception(e)
         raise e
+
 
