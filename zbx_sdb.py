@@ -1,17 +1,15 @@
 # -*- coding: utf8 -*-
 """
 Author: AcidGo
-Usage:
-    1. 监控巨杉数据库节点、集群的异常。
-
+Usage: 监控巨杉数据库 SequoiaDB。
 """
+
 import logging, json, os, sys, time
 import pysequoiadb
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pysequoiadb import client
 from pysequoiadb.error import SDBBaseError, SDBEndOfCursor
-
 
 def init_logger(level, logfile=None):
     """日志功能初始化。
@@ -40,7 +38,6 @@ def init_logger(level, logfile=None):
         logger.addHandler(handler)
     logging.info("Logger init finished.")
 
-
 class SDBInst(object):
     """
     """
@@ -67,7 +64,6 @@ class SDBInst(object):
         "SDB_SNAP_SESSIONS": 2,
         "SDB_SNAP_SYSTEM": 7
     }
-
 
     def __init__(self, host="localhost", service=11810, user="", password=""):
         self.host = host
@@ -303,8 +299,11 @@ class SDBInst(object):
         res = {}
         jsonfile = self._cs_report_local_file()
         with open(jsonfile, "r") as f:
-            res = json.load(f)
-        return res[cs_name]
+            t = json.load(f)
+        res = t[cs_name]
+        res["UsedSize"] = res.get("TotalSize", 0) - res.get("FreeSize", 0)
+        res["UsedDataSize"] = res.get("TotalDataSize", 0) - res.get("FreeDataSize", 0)
+        return res
         
     def cs_report(self, cs_name):
         res = {}
@@ -448,7 +447,6 @@ class SDBInst(object):
                 res.append(i["Name"])
         return res
 
-
 def discovery_inst(type_):
     import zbx_sdb_config
     res = {"data": []}
@@ -476,11 +474,10 @@ def discovery_all_cs():
                 "{#INFO}": inst.get("info", "UNKNOW"),
                 "{#IP}": connect["host"],
                 "{#SERVICE}": connect["service"],
-		"{#CSNAME}": cs,
+        "{#CSNAME}": cs,
             })
         zbx_sdb.close()
     return res
-
 
 def main():
     import sys
@@ -524,5 +521,3 @@ if __name__ == "__main__":
     except Exception as e:
         logging.exception(e)
         raise e
-
-
